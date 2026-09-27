@@ -1,0 +1,21 @@
+artifact_version: 1
+skill: sawasdee
+variant: knee_bend_v1
+training_method: RPO-BeyondMimic PPO
+source_export: knee_bend_10000
+source_checkpoint: model_9999.pt
+policy:
+  path: models/policy_sawasdee.onnx
+  sha256: 4201794344167dffa696b6064ca7900fc50f3ef698a3459592e6f553a3ab18ad
+  input_shape: [1, 121]
+  output_shape: [1, 23]
+motion:
+  path: motions/sawasdee_knee_bend_v1.npz
+  sha256: c314716a3bb64e483bef962e805cca31b18cbf4d055995f9407d5f5d47ae2759
+  frames: 383
+  joints: 23
+  fps: 50
+runtime:
+  config: configs/sawasdee.yaml
+  control_hz: 50
+  action_scale: 0.25
