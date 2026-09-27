@@ -132,6 +132,7 @@ class RobotInterface {
                 }
             });
     }
+    void rollback_motor_initialization() noexcept;
     void throw_if_motors_offline() const;
     void motors_mit_cmd();
     void forward_close_chain();

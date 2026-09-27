@@ -19,3 +19,5 @@ runtime:
   config: configs/sawasdee.yaml
   control_hz: 50
   action_scale: 0.25
+  hardware_validated: false
+  validation_status: offline_and_mujoco_only

@@ -294,6 +294,9 @@ void InferenceNode::set_runtime_fault(const std::string& fault) {
 }
 
 bool InferenceNode::try_start_inference(std::string& reason) {
+    if (!hardware_execution_allowed(reason)) {
+        return false;
+    }
     if (motion_action_active_.load()) {
         reason = "A motion action is still active or cancelling";
         return false;
@@ -306,6 +309,16 @@ bool InferenceNode::try_start_inference(std::string& reason) {
         }
     }
     return resume_inference_if_fault_free(reason);
+}
+
+bool InferenceNode::hardware_execution_allowed(std::string& reason) const {
+    if (hardware_validated_ || allow_unvalidated_hardware_) {
+        return true;
+    }
+    reason =
+        "This policy profile is not validated for physical hardware; use simulation or "
+        "complete supervised validation before enabling motors";
+    return false;
 }
 
 bool InferenceNode::resume_inference_if_fault_free(std::string& reason) {
@@ -360,6 +373,9 @@ bool InferenceNode::activate_motion_policy(
     }
     if (!policies_[policy_idx].motion_loader) {
         error = "Policy is not a registered motion: " + policy_id;
+        return false;
+    }
+    if (!hardware_execution_allowed(error)) {
         return false;
     }
 

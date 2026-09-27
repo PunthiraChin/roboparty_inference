@@ -341,10 +341,80 @@ void RobotInterface::init_motors() {
     if (is_init_.load()) {
         throw std::runtime_error("Motors are already initialized");
     }
-    exec_motors_parallel([](std::shared_ptr<MotorDriver>& motor, int) {
-        motor->init_motor();
-    });
+
+    // roboparty-motors 2.2.1 reports a healthy initialization with status 0.
+    // Its status alone cannot distinguish a healthy motor from an offline DM
+    // motor, so also require the final request in init_motor() to have received
+    // a response. The Debian package is pinned to that exact driver contract.
+    std::vector<uint8_t> init_status(motors_.size(), UINT8_MAX);
+    std::vector<int> response_count(motors_.size(), offline_threshold_ + 1);
+    try {
+        exec_motors_parallel([&init_status, &response_count](
+                                 std::shared_ptr<MotorDriver>& motor, int idx) {
+            init_status[idx] = motor->init_motor();
+            response_count[idx] = motor->get_response_count();
+        });
+
+        std::string failed_motors;
+        for (size_t idx = 0; idx < motors_.size(); ++idx) {
+            if (init_status[idx] == 0 && response_count[idx] == 0) {
+                continue;
+            }
+            if (!failed_motors.empty()) {
+                failed_motors += ", ";
+            }
+            failed_motors += motors_[idx]->get_can_name() + "/id=" +
+                             std::to_string(motors_cfg_->motor_id_[idx]) +
+                             "(status=" + std::to_string(init_status[idx]) +
+                             ", response_count=" +
+                             std::to_string(response_count[idx]) + ")";
+        }
+        if (!failed_motors.empty()) {
+            throw std::runtime_error("Motor initialization failed: " + failed_motors);
+        }
+    } catch (...) {
+        rollback_motor_initialization();
+        throw;
+    }
+
     is_init_.store(true);
+}
+
+void RobotInterface::rollback_motor_initialization() noexcept {
+    is_init_.store(false);
+    std::vector<std::exception_ptr> rollback_errors(motors_.size());
+    try {
+        exec_motors_parallel([&rollback_errors](
+                                 std::shared_ptr<MotorDriver>& motor, int idx) {
+            try {
+                motor->deinit_motor();
+            } catch (...) {
+                // Keep going so one faulty motor cannot leave later motors on
+                // the same bus enabled.
+                rollback_errors[idx] = std::current_exception();
+            }
+        });
+    } catch (const std::exception& error) {
+        std::cerr << "Motor initialization rollback dispatcher failed: "
+                  << error.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Motor initialization rollback dispatcher failed with an unknown error"
+                  << std::endl;
+    }
+    for (size_t idx = 0; idx < rollback_errors.size(); ++idx) {
+        if (!rollback_errors[idx]) {
+            continue;
+        }
+        try {
+            std::rethrow_exception(rollback_errors[idx]);
+        } catch (const std::exception& error) {
+            std::cerr << "Failed to disable motor id=" << motors_cfg_->motor_id_[idx]
+                      << " during initialization rollback: " << error.what() << std::endl;
+        } catch (...) {
+            std::cerr << "Failed to disable motor id=" << motors_cfg_->motor_id_[idx]
+                      << " during initialization rollback: unknown error" << std::endl;
+        }
+    }
 }
 
 void RobotInterface::deinit_motors() {

@@ -3,6 +3,8 @@ uint8 COMMAND_SOURCE_EXTERNAL=1
 
 bool motors_initialized
 bool inference_running
+bool hardware_validated
+bool unvalidated_hardware_override
 uint8 command_source
 string active_policy_id
 bool motion_active

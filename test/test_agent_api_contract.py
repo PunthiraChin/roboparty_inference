@@ -15,6 +15,7 @@ class AgentApiContractTests(unittest.TestCase):
         with (ROOT / "robots/rpo/configs/sawasdee.yaml").open() as stream:
             params = yaml.safe_load(stream)["inference_node"]["ros__parameters"]
         self.assertEqual(params["policy_ids"], ["locomotion", "sawasdee"])
+        self.assertIs(params["hardware_validated"], False)
         self.assertLessEqual(float(params["cmd_vel_timeout_s"]), 0.5)
         self.assertLessEqual(float(params["gravity_z_upper"]), -0.5)
 
@@ -34,6 +35,8 @@ class AgentApiContractTests(unittest.TestCase):
         self.assertIn("uint8 command_source", state)
         self.assertIn("bool external_command_fresh", state)
         self.assertIn("string active_policy_id", state)
+        self.assertIn("bool hardware_validated", state)
+        self.assertIn("bool unvalidated_hardware_override", state)
 
     def test_generated_interfaces_are_wired_into_build(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text()
@@ -42,10 +45,12 @@ class AgentApiContractTests(unittest.TestCase):
         self.assertIn("rosidl_generate_interfaces", cmake)
         self.assertIn("rclcpp_action", cmake)
         self.assertIn("find_package(action_msgs REQUIRED)", cmake)
+        self.assertIn("find_package(rcl_interfaces REQUIRED)", cmake)
         self.assertNotIn("service_msgs", cmake)
         self.assertIn("ament_add_pytest_test(agent_api_contract", cmake)
         self.assertIn("rosidl_default_generators", package)
         self.assertIn("<depend>action_msgs</depend>", package)
+        self.assertIn("<depend>rcl_interfaces</depend>", package)
         self.assertNotIn("service_msgs", package)
 
     def test_package_targets_robot_humble_stack_and_versions_match(self) -> None:
@@ -58,7 +63,10 @@ class AgentApiContractTests(unittest.TestCase):
             self.assertIn("humble", text.lower())
             self.assertNotIn("jazzy", text.lower())
         for dependency in (
+            "ccache",
+            "libeigen3-dev",
             "ros-humble-action-msgs",
+            "ros-humble-rcl-interfaces",
             "ros-humble-std-msgs",
             "ros-humble-sensor-msgs",
             "ros-humble-geometry-msgs",
@@ -83,7 +91,18 @@ class AgentApiContractTests(unittest.TestCase):
         self.assertIn(
             "gh release download v2.2.1 --repo Roboparty/roboparty_motors", workflow
         )
+        self.assertIn("sha256sum -c -", workflow)
+        for digest in (
+            "6ae2ca3d51f88f00182d3cf4ce2052ca6b03d96db677992989d3f147feb50465",
+            "2f6390adee13ea2c0ddaaf8cb981b18c3655de6ec3e5032dae26516c8de2e553",
+            "59a5f1d9cd54657ebb884b165ba9a4001fa8a6894b04cd7a9a879adf6a9c423b",
+            "c566941d62296325f6ef6e8ce6634423f32ca184cf2fba574e922eeb62a5a625",
+            "dd98a7fe093ed8145ab843596630555ddd9ebb171a45eaef1ae0d034a37c7412",
+        ):
+            self.assertIn(digest, workflow)
         self.assertNotIn("Downloading latest", workflow)
+        self.assertGreaterEqual(control.count("roboparty-motors (= 2.2.1-1)"), 2)
+        self.assertGreaterEqual(control.count("roboparty-imu (= 1.3.0-1)"), 2)
         package_version = re.search(r"<version>([^<]+)</version>", package)
         changelog_version = re.search(r"\(([^-)]+)-", changelog)
         self.assertIsNotNone(package_version)
@@ -166,6 +185,60 @@ class AgentApiContractTests(unittest.TestCase):
         self.assertIn("non_finite_action_target", runtime)
         self.assertIn("action_target_outside_joint_limits", runtime)
 
+    def test_sawasdee_uses_canonical_hardware_joint_limits(self) -> None:
+        with (ROOT / "robots/rpo/configs/default.yaml").open() as stream:
+            default = yaml.safe_load(stream)["inference_node"]["ros__parameters"]
+        with (ROOT / "robots/rpo/configs/sawasdee.yaml").open() as stream:
+            sawasdee = yaml.safe_load(stream)["inference_node"]["ros__parameters"]
+        with (ROOT / "robots/rpo/sawasdee.manifest.yaml").open() as stream:
+            manifest = yaml.safe_load(stream)
+        validator = (ROOT / "tools/validate_motion_policy.py").read_text()
+        self.assertEqual(sawasdee["joint_limits"], default["joint_limits"])
+        self.assertIs(sawasdee["hardware_validated"], False)
+        self.assertIs(manifest["runtime"]["hardware_validated"], False)
+        self.assertEqual(manifest["runtime"]["validation_status"], "offline_and_mujoco_only")
+        self.assertIn("canonical RPO hardware joint limits", validator)
+        self.assertIn("hardware: BLOCKED (offline/simulation validation only)", validator)
+
+    def test_unvalidated_profiles_fail_closed_without_blocking_shutdown(self) -> None:
+        header = (ROOT / "src/inference_node.hpp").read_text()
+        runtime = (ROOT / "src/inference_node.cpp").read_text()
+        ros_interface = (ROOT / "src/ros_interface.cpp").read_text()
+        launch = (ROOT / "launch/inference.launch.py").read_text()
+
+        self.assertIn("bool hardware_validated_ = false", header)
+        self.assertIn("bool allow_unvalidated_hardware_ = false", header)
+        self.assertIn("hardware_execution_allowed", header)
+        self.assertIn('declare_parameter<bool>("hardware_validated", false', ros_interface)
+        self.assertIn("hardware_validated_descriptor.read_only = true", ros_interface)
+        self.assertIn("hardware_override_descriptor.read_only = true", ros_interface)
+        self.assertIn('"allow_unvalidated_hardware", false', ros_interface)
+        self.assertIn("if (!hardware_execution_allowed(blocked_reason))", ros_interface)
+        self.assertIn("if (!hardware_execution_allowed(reason))", runtime)
+        self.assertIn('DeclareLaunchArgument("allow_unvalidated_hardware", default_value="false")', launch)
+
+        established_profiles = (
+            "default.yaml",
+            "amp.yaml",
+            "attn_enc.yaml",
+            "beyondmimic.yaml",
+            "getup.yaml",
+            "interrupt.yaml",
+            "parkour.yaml",
+        )
+        for filename in established_profiles:
+            with self.subTest(filename=filename):
+                with (ROOT / "robots/rpo/configs" / filename).open() as stream:
+                    params = yaml.safe_load(stream)["inference_node"]["ros__parameters"]
+                self.assertIs(params["hardware_validated"], True)
+
+        deinit = ros_interface.split("void InferenceNode::deinit_motors_srv", 1)[1]
+        deinit = deinit.split("void InferenceNode::start_inference_srv", 1)[0]
+        self.assertNotIn("hardware_execution_allowed", deinit)
+        stop = ros_interface.split("void InferenceNode::stop_inference_srv", 1)[1]
+        stop = stop.split("void InferenceNode::set_command_source_srv", 1)[0]
+        self.assertNotIn("hardware_execution_allowed", stop)
+
     def test_config_and_onnx_contracts_are_validated_before_workers_start(self) -> None:
         header = (ROOT / "src/inference_node.hpp").read_text()
         runtime = (ROOT / "src/inference_node.cpp").read_text()
@@ -193,6 +266,22 @@ class AgentApiContractTests(unittest.TestCase):
         self.assertIn("resume_inference_if_fault_free", ros_interface)
         self.assertEqual(runtime.count("is_running_.store(true)"), 1)
         self.assertNotIn("is_running_.store(true)", ros_interface)
+
+    def test_motor_initialization_fails_closed_and_rolls_back(self) -> None:
+        header = (ROOT / "include/robot_interface.hpp").read_text()
+        robot = (ROOT / "src/robot_interface.cpp").read_text()
+        init = robot.split("void RobotInterface::init_motors()", 1)[1]
+        init = init.split("void RobotInterface::deinit_motors()", 1)[0]
+        self.assertIn("rollback_motor_initialization() noexcept", header)
+        self.assertIn("init_status[idx] = motor->init_motor()", init)
+        self.assertIn("response_count[idx] = motor->get_response_count()", init)
+        self.assertIn("init_status[idx] == 0 && response_count[idx] == 0", init)
+        self.assertIn("rollback_motor_initialization();", init)
+        self.assertLess(init.index("rollback_motor_initialization();"), init.index("is_init_.store(true)"))
+        rollback = init.split("void RobotInterface::rollback_motor_initialization()", 1)[1]
+        self.assertIn("is_init_.store(false)", rollback)
+        self.assertIn("motor->deinit_motor()", rollback)
+        self.assertIn("rollback_errors[idx] = std::current_exception()", rollback)
 
 
 if __name__ == "__main__":

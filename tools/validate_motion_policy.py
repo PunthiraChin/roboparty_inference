@@ -36,9 +36,12 @@ def main() -> None:
 
     rpo = args.repo / "robots" / "rpo"
     config_path = rpo / "configs" / "sawasdee.yaml"
+    canonical_config_path = rpo / "configs" / "default.yaml"
     manifest_path = rpo / "sawasdee.manifest.yaml"
     with config_path.open() as stream:
         params = yaml.safe_load(stream)["inference_node"]["ros__parameters"]
+    with canonical_config_path.open() as stream:
+        canonical_params = yaml.safe_load(stream)["inference_node"]["ros__parameters"]
     with manifest_path.open() as stream:
         manifest = yaml.safe_load(stream)
 
@@ -55,6 +58,14 @@ def main() -> None:
         raise ValueError("cmd_vel_timeout_s must be between 0.05 and 0.5 seconds")
     if float(params["gravity_z_upper"]) > -0.5:
         raise ValueError("Fall detection must remain enabled for Sawasdee")
+    if params["joint_limits"] != canonical_params["joint_limits"]:
+        raise ValueError("Sawasdee must use the canonical RPO hardware joint limits")
+    if params.get("hardware_validated") is not False:
+        raise ValueError(
+            "Sawasdee must remain blocked from physical hardware until supervised validation"
+        )
+    if manifest.get("runtime", {}).get("hardware_validated") is not False:
+        raise ValueError("Manifest must record that physical-hardware validation is incomplete")
 
     model_path = rpo / "models" / names[1]
     motion_path = rpo / "motions" / motions[1]
@@ -112,6 +123,7 @@ def main() -> None:
     print(f"  contract: [1, {expected_input}] -> [1, 23]")
     print(f"  motion: {joint_pos.shape[0]} frames at {fps:g} Hz ({joint_pos.shape[0] / fps:.2f}s)")
     print(f"  control: {control_hz:g} Hz")
+    print("  hardware: BLOCKED (offline/simulation validation only)")
 
 
 if __name__ == "__main__":

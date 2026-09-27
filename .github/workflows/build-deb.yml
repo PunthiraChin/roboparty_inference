@@ -78,7 +78,8 @@ jobs:
             -o dir::cache::archives="$PWD/apt-cache" \
             build-essential cmake ccache dpkg-dev debhelper devscripts \
             git wget python3-pip python3-vcstool python3-yaml \
-            libboost-all-dev libspdlog-dev libfmt-dev python3-dev pybind11-dev gh
+            libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev \
+            python3-dev pybind11-dev gh
           
           # Fix permissions for cache saving
           sudo chown -R $(id -u):$(id -g) apt-cache
@@ -100,6 +101,20 @@ jobs:
             --pattern "roboparty-imu_1.3.0-1_${{ matrix.arch }}.deb"
           gh release download v2.2.1 --repo Roboparty/roboparty_motors \
             --pattern "roboparty-motors_2.2.1-1_${{ matrix.arch }}.deb"
+
+          echo "6ae2ca3d51f88f00182d3cf4ce2052ca6b03d96db677992989d3f147feb50465  roboparty-base_1.1.8-1_all.deb" \
+            | sha256sum -c -
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            echo "2f6390adee13ea2c0ddaaf8cb981b18c3655de6ec3e5032dae26516c8de2e553  roboparty-imu_1.3.0-1_amd64.deb" \
+              | sha256sum -c -
+            echo "c566941d62296325f6ef6e8ce6634423f32ca184cf2fba574e922eeb62a5a625  roboparty-motors_2.2.1-1_amd64.deb" \
+              | sha256sum -c -
+          else
+            echo "59a5f1d9cd54657ebb884b165ba9a4001fa8a6894b04cd7a9a879adf6a9c423b  roboparty-imu_1.3.0-1_arm64.deb" \
+              | sha256sum -c -
+            echo "dd98a7fe093ed8145ab843596630555ddd9ebb171a45eaef1ae0d034a37c7412  roboparty-motors_2.2.1-1_arm64.deb" \
+              | sha256sum -c -
+          fi
           
           ls -lh
 

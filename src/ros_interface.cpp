@@ -13,6 +13,17 @@ void InferenceNode::load_config() {
     this->declare_parameter<std::string>("model_dir", default_robot_dir + "/models");
     this->declare_parameter<std::string>("motion_dir", default_robot_dir + "/motions");
     this->declare_parameter<std::string>("latent_dir", default_robot_dir + "/latents");
+    rcl_interfaces::msg::ParameterDescriptor hardware_validated_descriptor;
+    hardware_validated_descriptor.description =
+        "Whether this complete policy profile passed supervised physical-hardware validation";
+    hardware_validated_descriptor.read_only = true;
+    this->declare_parameter<bool>("hardware_validated", false, hardware_validated_descriptor);
+    rcl_interfaces::msg::ParameterDescriptor hardware_override_descriptor;
+    hardware_override_descriptor.description =
+        "Explicit startup-only override for an unvalidated physical-hardware profile";
+    hardware_override_descriptor.read_only = true;
+    this->declare_parameter<bool>(
+        "allow_unvalidated_hardware", false, hardware_override_descriptor);
     this->declare_parameter<std::vector<std::string>>("model_names", std::vector<std::string>{});
     this->declare_parameter<std::vector<std::string>>("policy_ids", std::vector<std::string>{});
     this->declare_parameter<std::vector<std::string>>("motion_names", std::vector<std::string>{});
@@ -65,6 +76,19 @@ void InferenceNode::load_config() {
     this->get_parameter("latent_dir", latent_dir);
     this->get_parameter("model_names", model_names);
     this->get_parameter("policy_ids", policy_ids);
+    this->get_parameter("hardware_validated", hardware_validated_);
+    this->get_parameter("allow_unvalidated_hardware", allow_unvalidated_hardware_);
+    if (!hardware_validated_ && !allow_unvalidated_hardware_) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "THIS POLICY PROFILE IS NOT VALIDATED FOR PHYSICAL HARDWARE; "
+            "motor initialization and inference are blocked");
+    }
+    if (!hardware_validated_ && allow_unvalidated_hardware_) {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "UNVALIDATED HARDWARE OVERRIDE IS ACTIVE: supervised engineering use only");
+    }
     this->get_parameter("motion_names", motion_names);
     this->get_parameter("latent_names", latent_names);
     this->get_parameter("obs_layouts", obs_layouts);
@@ -363,6 +387,12 @@ void InferenceNode::load_config() {
     RCLCPP_INFO(this->get_logger(), "perception_obs_num: %d", perception_obs_num_);
     RCLCPP_INFO(this->get_logger(), "perception_obs_topic: %s", perception_obs_topic_.c_str());
     RCLCPP_INFO(this->get_logger(), "use_depth: %s", use_depth_ ? "true" : "false");
+    RCLCPP_INFO(this->get_logger(), "hardware_validated: %s", hardware_validated_ ? "true" : "false");
+    if (allow_unvalidated_hardware_) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "allow_unvalidated_hardware: true (supervised engineering override)");
+    }
     RCLCPP_INFO(this->get_logger(), "joint_num: %d", joint_num_);
     RCLCPP_INFO(this->get_logger(), "decimation: %d", decimation_);
     RCLCPP_INFO(this->get_logger(), "dt: %f", dt_);
@@ -420,6 +450,10 @@ void InferenceNode::subs_joy_callback(const std::shared_ptr<sensor_msgs::msg::Jo
                 robot_->deinit_motors();
                 RCLCPP_INFO(this->get_logger(), "Motors deinitialized");
             } else {
+                std::string blocked_reason;
+                if (!hardware_execution_allowed(blocked_reason)) {
+                    throw std::runtime_error(blocked_reason);
+                }
                 robot_->init_motors();
                 RCLCPP_INFO(this->get_logger(), "Motors initialized");
             }
@@ -741,6 +775,10 @@ void InferenceNode::set_zeros_srv(const std::shared_ptr<std_srvs::srv::Trigger::
 void InferenceNode::clear_errors_srv(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                                      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
     try {
+        std::string blocked_reason;
+        if (!hardware_execution_allowed(blocked_reason)) {
+            throw std::runtime_error(blocked_reason);
+        }
         robot_->clear_errors();
         response->success = true;
         response->message = "Errors cleared successfully";
@@ -754,6 +792,10 @@ void InferenceNode::init_motors_srv(const std::shared_ptr<std_srvs::srv::Trigger
                                     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
     std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
     try {
+        std::string blocked_reason;
+        if (!hardware_execution_allowed(blocked_reason)) {
+            throw std::runtime_error(blocked_reason);
+        }
         robot_->init_motors();
         response->success = true;
         response->message = "Motors initialized successfully";
@@ -855,6 +897,11 @@ rclcpp_action::GoalResponse InferenceNode::handle_motion_goal(
         return rclcpp_action::GoalResponse::REJECT;
     }
     std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    std::string blocked_reason;
+    if (!hardware_execution_allowed(blocked_reason)) {
+        RCLCPP_WARN(this->get_logger(), "Rejected motion goal: %s", blocked_reason.c_str());
+        return rclcpp_action::GoalResponse::REJECT;
+    }
     if (!robot_->is_init_.load() || !is_running_.load()) {
         RCLCPP_WARN(this->get_logger(), "Rejected motion goal: motors/inference are not ready");
         return rclcpp_action::GoalResponse::REJECT;
@@ -1046,6 +1093,8 @@ void InferenceNode::publish_runtime_state() {
     roboparty_inference::msg::RuntimeState state;
     state.motors_initialized = robot_->is_init_.load();
     state.inference_running = is_running_.load();
+    state.hardware_validated = hardware_validated_;
+    state.unvalidated_hardware_override = allow_unvalidated_hardware_;
     state.command_source = is_joy_control_.load()
         ? roboparty_inference::msg::RuntimeState::COMMAND_SOURCE_JOYSTICK
         : roboparty_inference::msg::RuntimeState::COMMAND_SOURCE_EXTERNAL;
@@ -1075,6 +1124,8 @@ void InferenceNode::publish_terminal_fault_state(const std::string& fault) {
     roboparty_inference::msg::RuntimeState state;
     state.motors_initialized = robot_ && robot_->is_init_.load();
     state.inference_running = false;
+    state.hardware_validated = hardware_validated_;
+    state.unvalidated_hardware_override = allow_unvalidated_hardware_;
     state.command_source = is_joy_control_.load()
         ? roboparty_inference::msg::RuntimeState::COMMAND_SOURCE_JOYSTICK
         : roboparty_inference::msg::RuntimeState::COMMAND_SOURCE_EXTERNAL;

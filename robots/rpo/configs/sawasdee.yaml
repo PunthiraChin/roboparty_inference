@@ -3,6 +3,10 @@ inference_node:
         # Semantic IDs are used by the typed ExecuteMotion action. Numeric
         # indexes remain an internal implementation detail.
         policy_ids: ["locomotion", "sawasdee"]
+        # The exported policy can request targets outside the canonical hardware
+        # envelope under plausible tracking states. Keep physical execution
+        # blocked until it is safety-tuned and revalidated.
+        hardware_validated: false
         model_names: ["policy.onnx", "policy_sawasdee.onnx"]
         motion_names: ["", "sawasdee_knee_bend_v1.npz"]
         obs_layouts:
@@ -35,27 +39,27 @@ inference_node:
              0.18, 0.06, 0.0, 0.78, 0.0,
              0.18, -0.06, 0.0, 0.78, 0.0]
         joint_limits:
-            [-3.14, 3.14,
+            [-1.0, 0.6,
+             -0.6, 1.0,
+             -1.57, 1.57,
+             -0.2, 2.5,
+             -0.6, 0.6,
+             -0.5, 0.5,
+             -0.6, 1.0,
+             -1.0, 0.6,
+             -1.57, 1.57,
+             -0.2, 2.5,
+             -0.6, 0.6,
+             -0.5, 0.5,
              -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14,
-             -3.14, 3.14]
+             -3.14, 1.57,
+             -0.25, 3.14,
+             -1.57, 1.57,
+             -0.6, 1.57,
+             -1.57, 1.57,
+             -3.14, 1.57,
+             -3.14, 0.25,
+             -1.57, 1.57,
+             -0.6, 1.57,
+             -1.57, 1.57]
         gravity_z_upper: -0.5

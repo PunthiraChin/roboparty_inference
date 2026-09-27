@@ -2,6 +2,9 @@ roboparty-inference (1.4.0-1) stable; urgency=medium
 
   * Add typed motion, command-source, and runtime-state interfaces for agents.
   * Add watchdog, fault latching, finite-value, and policy-contract safety gates.
+  * Block unvalidated policy profiles from physical-hardware execution.
+  * Fail closed and disable all motors after a partial initialization failure.
+  * Declare the complete clean-build dependency set.
   * Build for the RoboParty Ubuntu 22.04 and ROS 2 Humble deployment stack.
 
  -- PunthiraChin <PunthiraChin@users.noreply.github.com>  Sun, 27 Sep 2026 22:00:00 +0700

@@ -23,6 +23,7 @@
 #include <thread>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/joy.hpp>
@@ -243,6 +244,8 @@ class InferenceNode : public rclcpp::Node {
     int locomotion_policy_idx_ = -1;
     int perception_obs_num_, joint_num_;
     bool use_depth_ = false;
+    bool hardware_validated_ = false;
+    bool allow_unvalidated_hardware_ = false;
     int decimation_;
     std::unique_ptr<Ort::Env> env_;
     int intra_threads_;
@@ -319,6 +322,7 @@ class InferenceNode : public rclcpp::Node {
     void set_runtime_fault(const std::string& fault);
     bool try_start_inference(std::string& reason);
     bool resume_inference_if_fault_free(std::string& reason);
+    bool hardware_execution_allowed(std::string& reason) const;
     bool external_command_is_fresh();
     bool activate_motion_policy(
         const std::string& policy_id,

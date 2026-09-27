@@ -1,5 +1,6 @@
 inference_node:
     ros__parameters:
+        hardware_validated: true
         policy_ids: ["locomotion", "getup"]
         model_names: ["policy.onnx", "policy_getup.onnx"]
         motion_names: ["", "getup.npz"]

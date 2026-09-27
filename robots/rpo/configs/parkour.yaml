@@ -1,5 +1,6 @@
 inference_node:
     ros__parameters:
+        hardware_validated: true
         use_depth: true
         perception_obs_topic: "/depth_obs"
         model_names: ["policy_parkour.onnx"]

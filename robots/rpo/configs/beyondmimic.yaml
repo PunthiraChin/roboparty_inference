@@ -1,5 +1,6 @@
 inference_node:
     ros__parameters:
+        hardware_validated: true
         policy_ids: ["locomotion", "wave", "dance0", "dance1"]
         model_names: ["policy.onnx", "policy_wave.onnx", "policy_dance0.onnx", "policy_dance1.onnx"]
         motion_names: ["", "wave.npz", "dance0.npz", "dance1.npz"]

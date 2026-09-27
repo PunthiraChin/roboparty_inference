@@ -24,25 +24,33 @@ From the `roboparty_inference` repository:
 python3 tools/validate_motion_policy.py
 ```
 
-This checks the YAML wiring, ONNX input/output contract, motion arrays, hashes,
-and one CPU inference. It does not initialize or contact motors.
+This checks the YAML wiring, canonical joint limits, hardware-validation gate,
+ONNX input/output contract, motion arrays, hashes, and one CPU inference. It
+does not initialize or contact motors.
 
 Artifact provenance and expected hashes are recorded in
 `sawasdee.manifest.yaml`.
 
-## Start on RoboParty
+## Physical-hardware gate
 
-Build and source the ROS 2 workspace using the normal deployment instructions,
-then select the new configuration:
+The bundled Sawasdee profile is **offline/simulation only**. It is deliberately
+configured with `hardware_validated: false`, so the runtime blocks motor
+initialization, inference start, and motion goals by default. Preflight replay
+found that the exported policy can request targets outside RoboParty's
+canonical joint envelope under plausible tracking states. Passing MuJoCo is a
+useful transfer check, but is not physical-hardware validation.
 
-```bash
-./tools/start_robot.sh --robot rpo --policy sawasdee
-```
+Do not use the normal robot start flow for this profile yet. Before changing
+the flag to `true`, retrain or safety-tune the policy to respect the canonical
+limits, rerun the offline/MuJoCo regressions, then complete supervised tests on
+a physical stand with a working emergency stop and progressively bounded
+motion. Record that evidence in the policy manifest and review it independently.
 
-The command is run from the top-level `roboparty_deploy` repository, not from
-this submodule.
+An explicit startup-only `allow_unvalidated_hardware` override exists for a
+controlled engineering validation session. It is read-only after startup,
+published in `/runtime_state`, and must never be used for normal operation.
 
-Manual gamepad flow remains available:
+After hardware validation, the normal manual flow is:
 
 1. Put the robot on a supported stand and clear the surrounding area.
 2. Use `X` for the normal motor initialization flow.
@@ -56,7 +64,7 @@ frames, reports progress, and then automatically returns to locomotion.
 Cancellation, timeout, joystick override, inference stop, and motor
 deinitialization also cancel the action and zero the velocity buffer.
 
-## Typed agent API
+## Typed agent API (after hardware validation)
 
 The action accepts semantic IDs, never numeric policy indexes:
 
@@ -83,7 +91,8 @@ fault; inference cannot be resumed until the node is restarted. A cancelling
 motion or active joint reset also blocks resume.
 
 These interfaces must be tested in a ROS-only/offline harness and simulation
-before they are exercised on physical hardware.
+before they are exercised on physical hardware. With the current Sawasdee
+bundle, the hardware gate intentionally rejects the action.
 
 ## Safety boundary for a future VLA agent
 

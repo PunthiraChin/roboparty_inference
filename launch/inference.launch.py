@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 import os
 import re
@@ -49,6 +50,10 @@ def launch_setup(context, *args, **kwargs):
                     "model_dir": os.path.join(robot_dir, "models"),
                     "motion_dir": os.path.join(robot_dir, "motions"),
                     "latent_dir": os.path.join(robot_dir, "latents"),
+                    "allow_unvalidated_hardware": ParameterValue(
+                        LaunchConfiguration("allow_unvalidated_hardware"),
+                        value_type=bool,
+                    ),
                 },
             ],
             output="screen",
@@ -62,6 +67,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("robot", default_value="rpo"),
             DeclareLaunchArgument("policy", default_value="default"),
+            DeclareLaunchArgument("allow_unvalidated_hardware", default_value="false"),
             OpaqueFunction(function=launch_setup),
         ]
     )
