@@ -1,3 +1,11 @@
+roboparty-inference (1.4.0-1) stable; urgency=medium
+
+  * Add typed motion, command-source, and runtime-state interfaces for agents.
+  * Add watchdog, fault latching, finite-value, and policy-contract safety gates.
+  * Build for the RoboParty Ubuntu 22.04 and ROS 2 Humble deployment stack.
+
+ -- PunthiraChin <PunthiraChin@users.noreply.github.com>  Sun, 27 Sep 2026 22:00:00 +0700
+
 roboparty-inference (1.3.0-1) stable; urgency=medium
 
   * Prepare native Ubuntu 24.04 build jobs for amd64 and arm64.

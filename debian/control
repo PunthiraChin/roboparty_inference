@@ -4,12 +4,20 @@ Priority: optional
 Maintainer: RoboParty <ZhihaoLiu_hit@163.com>
 Build-Depends: debhelper-compat (= 12), cmake, pkg-config,
                libspdlog-dev, libfmt-dev, libboost-all-dev,
-               python3-dev, pybind11-dev,
+               python3-dev, python3-yaml, pybind11-dev,
+               ros-humble-ament-cmake, ros-humble-ament-cmake-pytest,
+               ros-humble-rclcpp, ros-humble-rclcpp-action,
+               ros-humble-action-msgs,
+               ros-humble-std-msgs, ros-humble-sensor-msgs,
+               ros-humble-geometry-msgs, ros-humble-std-srvs,
+               ros-humble-rosidl-default-generators,
                roboparty-motors, roboparty-imu
 
 Package: roboparty-inference
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
+         ros-humble-rclcpp, ros-humble-rclcpp-action,
+         ros-humble-rosidl-default-runtime,
          roboparty-base (>= 1.0.0), roboparty-motors (>= 1.2.0),
          roboparty-imu (>= 1.1.1)
 Description: RoboParty inference node

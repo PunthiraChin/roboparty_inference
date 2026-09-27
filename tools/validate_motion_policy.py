@@ -43,11 +43,18 @@ def main() -> None:
         manifest = yaml.safe_load(stream)
 
     names = params["model_names"]
+    policy_ids = params["policy_ids"]
     motions = params["motion_names"]
     layouts = params["obs_layouts"]
     stacks = params["frame_stacks"]
-    if not (len(names) == len(motions) == len(layouts) == len(stacks) == 2):
+    if not (len(policy_ids) == len(names) == len(motions) == len(layouts) == len(stacks) == 2):
         raise ValueError("Sawasdee config must contain exactly locomotion + motion entries")
+    if policy_ids != ["locomotion", "sawasdee"]:
+        raise ValueError("Sawasdee config must expose semantic policy IDs")
+    if not 0.05 <= float(params["cmd_vel_timeout_s"]) <= 0.5:
+        raise ValueError("cmd_vel_timeout_s must be between 0.05 and 0.5 seconds")
+    if float(params["gravity_z_upper"]) > -0.5:
+        raise ValueError("Fall detection must remain enabled for Sawasdee")
 
     model_path = rpo / "models" / names[1]
     motion_path = rpo / "motions" / motions[1]
@@ -62,8 +69,12 @@ def main() -> None:
         raise ValueError("Motion SHA-256 does not match its manifest")
 
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-    input_meta = session.get_inputs()[0]
-    output_meta = session.get_outputs()[0]
+    inputs = session.get_inputs()
+    outputs = session.get_outputs()
+    if len(inputs) != 1 or len(outputs) != 1:
+        raise ValueError("ONNX policy must have exactly one input and one output")
+    input_meta = inputs[0]
+    output_meta = outputs[0]
     if input_meta.shape != [1, expected_input]:
         raise ValueError(f"ONNX input {input_meta.shape}; expected [1, {expected_input}]")
     if output_meta.shape != [1, int(params["joint_num"])]:
@@ -86,6 +97,8 @@ def main() -> None:
             raise ValueError("joint_vel must match joint_pos")
         if joint_pos.dtype != np.float32 or joint_vel.dtype != np.float32:
             raise ValueError("joint_pos and joint_vel must be float32")
+        if not np.isfinite(joint_pos).all() or not np.isfinite(joint_vel).all():
+            raise ValueError("joint_pos and joint_vel must contain only finite values")
         if not np.isclose(fps, 50.0):
             raise ValueError(f"Motion is {fps} Hz; expected 50 Hz")
 

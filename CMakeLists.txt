@@ -17,10 +17,13 @@ add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(action_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(Boost COMPONENTS system)
 find_package(Eigen3 REQUIRED)
 find_package(spdlog REQUIRED)
@@ -29,6 +32,13 @@ find_package(roboparty_motors REQUIRED)
 find_package(roboparty_imu REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 find_package(pybind11 REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/ExecuteMotion.action"
+  "msg/RuntimeState.msg"
+  "srv/SetCommandSource.srv"
+  DEPENDENCIES action_msgs
+)
 
 option(YAML_BUILD_SHARED_LIBS "Build shared library" OFF)
 option(YAML_CPP_BUILD_TESTS "Build tests" OFF)
@@ -69,7 +79,9 @@ target_include_directories(inference_node
   ${CNPY_INCLUDE_DIR}
 )
 target_link_libraries(inference_node PUBLIC ${PUBLIC_DEPENDENCIES} utils cnpy robot)
-ament_target_dependencies(inference_node PUBLIC rclcpp std_msgs sensor_msgs geometry_msgs std_srvs)
+ament_target_dependencies(inference_node PUBLIC rclcpp rclcpp_action action_msgs std_msgs sensor_msgs geometry_msgs std_srvs)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(inference_node PUBLIC "${cpp_typesupport_target}")
 
 set_target_properties(inference_node PROPERTIES LINK_FLAGS "-Wl,--no-as-needed")
 
@@ -95,7 +107,12 @@ install(TARGETS robot_py
   ARCHIVE DESTINATION ${PYTHON_INSTALL_DIR}
   RUNTIME DESTINATION ${PYTHON_INSTALL_DIR})
 
-ament_export_dependencies(rclcpp std_msgs sensor_msgs geometry_msgs)
+ament_export_dependencies(rclcpp rclcpp_action action_msgs std_msgs sensor_msgs geometry_msgs rosidl_default_runtime)
 ament_export_libraries(robot)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(agent_api_contract test/test_agent_api_contract.py)
+endif()
 
 ament_package()

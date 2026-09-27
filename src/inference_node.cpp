@@ -93,21 +93,23 @@ void InferenceNode::setup_model(std::unique_ptr<ModelContext>& ctx, std::string 
         ctx->input_names[i] = input_name.get();
         auto type_info = ctx->session->GetInputTypeInfo(i);
         ctx->input_shape = type_info.GetTensorTypeAndShapeInfo().GetShape();
+        if (ctx->input_shape.size() != 2) {
+            throw std::runtime_error("ONNX input tensor must have shape [1, input_size]");
+        }
         if (ctx->input_shape[0] == -1) ctx->input_shape[0] = 1;
+        if (ctx->input_shape[0] != 1 ||
+            ctx->input_shape[1] != static_cast<int64_t>(input_size)) {
+            throw std::runtime_error(
+                "ONNX input tensor must have shape [1, " + std::to_string(input_size) + "]");
+        }
     }
 
-    size_t model_input_size = 1;
-    for (size_t i = 0; i < ctx->input_shape.size(); i++) {
-        model_input_size *= static_cast<size_t>(ctx->input_shape[i]);
-    }
-    if (model_input_size != static_cast<size_t>(input_size)) {
-        throw std::runtime_error(
-            "ONNX input size mismatch for " + model_path + ": model expects " +
-            std::to_string(model_input_size) + " values, but config provides " + std::to_string(input_size));
-    }
     ctx->input_buffer.resize(input_size);
 
     ctx->num_outputs = ctx->session->GetOutputCount();
+    if (ctx->num_outputs != 1) {
+        throw std::runtime_error("Only single-output ONNX models are supported: " + model_path);
+    }
     ctx->output_names.resize(ctx->num_outputs);
     ctx->output_buffer.resize(joint_num_);
 
@@ -116,8 +118,14 @@ void InferenceNode::setup_model(std::unique_ptr<ModelContext>& ctx, std::string 
         ctx->output_names[i] = output_name.get();
         auto type_info = ctx->session->GetOutputTypeInfo(i);
         ctx->output_shape = type_info.GetTensorTypeAndShapeInfo().GetShape();
+        if (ctx->output_shape.size() != 2) {
+            throw std::runtime_error("ONNX output tensor must have shape [1, joint_num]");
+        }
         if (ctx->output_shape[0] == -1) ctx->output_shape[0] = 1;
         if (ctx->output_shape[1] == -1) ctx->output_shape[1] = joint_num_;
+        if (ctx->output_shape[0] != 1 || ctx->output_shape[1] != joint_num_) {
+            throw std::runtime_error("ONNX output tensor must have shape [1, joint_num]");
+        }
     }
 
     ctx->input_names_raw = std::vector<const char *>(ctx->num_inputs, nullptr);
@@ -144,10 +152,11 @@ void InferenceNode::reset_runtime_state() {
     std::unique_lock<std::mutex> control_lock(control_mutex_);
     is_interrupt_.store(false);
     is_motion_policy_.store(false);
-    active_policy_idx_ = 0;
+    active_policy_idx_ = locomotion_policy_idx_;
     {
         std::unique_lock<std::mutex> lock(cmd_mutex_);
         std::fill(cmd_vel_.begin(), cmd_vel_.end(), 0.0f);
+        external_cmd_seen_ = false;
     }
     {
         std::unique_lock<std::mutex> lock(perception_mutex_);
@@ -192,7 +201,7 @@ InferenceNode::PolicyRuntime& InferenceNode::active_policy() {
 }
 
 void InferenceNode::initialize_runtime_state() {
-    active_policy_idx_ = 0;
+    active_policy_idx_ = locomotion_policy_idx_;
 
     joint_state_msg_.name.resize(joint_num_);
     joint_state_msg_.position.assign(joint_num_, 0.0f);
@@ -206,6 +215,8 @@ void InferenceNode::initialize_runtime_state() {
     }
 
     cmd_vel_.assign(3, 0.0f);
+    last_external_cmd_time_ = std::chrono::steady_clock::now();
+    external_cmd_seen_ = false;
     act_.assign(joint_num_, 0.0f);
     last_act_.assign(joint_num_, 0.0f);
     joint_pos_buffer_.assign(joint_num_, 0.0f);
@@ -243,10 +254,150 @@ void InferenceNode::reset_policy_runtime(PolicyRuntime& policy) {
         std::fill(policy.ctx->output_buffer.begin(), policy.ctx->output_buffer.end(), 0.0f);
     }
     policy.motion_frame = 0;
+    policy.motion_frames_executed = 0;
+    policy.motion_final_action_generation = 0;
+    policy.motion_complete = false;
     if (policy.latent_loader) {
         policy.latent_loader->reset();
     }
     policy.is_first_frame = true;
+}
+
+void InferenceNode::zero_cmd_vel() {
+    std::unique_lock<std::mutex> lock(cmd_mutex_);
+    std::fill(cmd_vel_.begin(), cmd_vel_.end(), 0.0f);
+    external_cmd_seen_ = false;
+}
+
+void InferenceNode::request_motion_cancel() {
+    std::unique_lock<std::mutex> goal_lock(motion_goal_mutex_);
+    if (motion_action_active_.load()) {
+        motion_cancel_requested_.store(true);
+    }
+}
+
+void InferenceNode::set_runtime_fault(const std::string& fault) {
+    bool first_fault = false;
+    {
+        std::unique_lock<std::mutex> fault_lock(runtime_fault_mutex_);
+        if (runtime_fault_.empty()) {
+            runtime_fault_ = fault;
+            first_fault = true;
+        }
+    }
+    if (first_fault) {
+        is_running_.store(false);
+        motion_cancel_requested_.store(true);
+        zero_cmd_vel();
+        publish_terminal_fault_state(fault);
+    }
+}
+
+bool InferenceNode::try_start_inference(std::string& reason) {
+    if (motion_action_active_.load()) {
+        reason = "A motion action is still active or cancelling";
+        return false;
+    }
+    {
+        std::unique_lock<std::mutex> reset_lock(reset_thread_mutex_);
+        if (reset_thread_running_) {
+            reason = "A joint reset is still active";
+            return false;
+        }
+    }
+    return resume_inference_if_fault_free(reason);
+}
+
+bool InferenceNode::resume_inference_if_fault_free(std::string& reason) {
+    // Every false -> true transition goes through this critical section.
+    // set_runtime_fault() uses the same mutex, so a concurrent fault always
+    // leaves the final state stopped rather than being overwritten by resume.
+    std::unique_lock<std::mutex> fault_lock(runtime_fault_mutex_);
+    if (!runtime_fault_.empty()) {
+        reason = "Runtime fault is latched; restart the inference node: " + runtime_fault_;
+        return false;
+    }
+    is_running_.store(true);
+    return true;
+}
+
+bool InferenceNode::external_command_is_fresh() {
+    std::unique_lock<std::mutex> lock(cmd_mutex_);
+    if (is_joy_control_.load() || !external_cmd_seen_) {
+        return false;
+    }
+    const double age_s = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - last_external_cmd_time_).count();
+    return age_s <= cmd_vel_timeout_s_;
+}
+
+int InferenceNode::find_policy_by_id(const std::string& policy_id) const {
+    const auto match = std::find_if(
+        policies_.begin(), policies_.end(), [&policy_id](const PolicyRuntime& policy) {
+            return policy.id == policy_id;
+        });
+    if (match == policies_.end()) {
+        return -1;
+    }
+    return static_cast<int>(std::distance(policies_.begin(), match));
+}
+
+bool InferenceNode::activate_motion_policy(
+    const std::string& policy_id,
+    const rclcpp_action::GoalUUID& goal_uuid,
+    std::string& error) {
+    std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    std::unique_lock<std::mutex> goal_lock(motion_goal_mutex_);
+    if (!motion_action_active_.load() || active_motion_goal_uuid_ != goal_uuid ||
+        motion_cancel_requested_.load()) {
+        error = "Motion was cancelled before activation";
+        return false;
+    }
+    const int policy_idx = find_policy_by_id(policy_id);
+    if (policy_idx < 0) {
+        error = "Unknown policy id: " + policy_id;
+        return false;
+    }
+    if (!policies_[policy_idx].motion_loader) {
+        error = "Policy is not a registered motion: " + policy_id;
+        return false;
+    }
+
+    std::unique_lock<std::mutex> switch_lock(lb_switch_mutex_);
+    const bool restore_running = is_running_.exchange(false);
+    std::unique_lock<std::mutex> mode_lock(mode_mutex_);
+    zero_cmd_vel();
+    active_policy_idx_ = policy_idx;
+    is_motion_policy_.store(true);
+    reset_policy_runtime(active_policy());
+    mode_lock.unlock();
+    if (!restore_running) {
+        error = "Inference stopped before motion activation";
+        return false;
+    }
+    if (!resume_inference_if_fault_free(error)) {
+        return false;
+    }
+    return true;
+}
+
+void InferenceNode::return_to_locomotion(const std::string& reason) {
+    std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    std::unique_lock<std::mutex> switch_lock(lb_switch_mutex_);
+    const bool restore_running = is_running_.exchange(false);
+    std::unique_lock<std::mutex> mode_lock(mode_mutex_);
+    zero_cmd_vel();
+    is_motion_policy_.store(false);
+    active_policy_idx_ = locomotion_policy_idx_;
+    reset_policy_runtime(active_policy());
+    mode_lock.unlock();
+    if (restore_running && robot_->is_init_.load()) {
+        std::string blocked_reason;
+        if (!resume_inference_if_fault_free(blocked_reason)) {
+            RCLCPP_WARN(this->get_logger(), "Locomotion remains stopped: %s", blocked_reason.c_str());
+        }
+    }
+    RCLCPP_INFO(this->get_logger(), "Returned to locomotion: %s", reason.c_str());
 }
 
 void InferenceNode::apply_action() {
@@ -254,19 +405,37 @@ void InferenceNode::apply_action() {
     if(!is_running_.load()){
         return;
     }
+    uint64_t generation = 0;
     {
         std::unique_lock<std::mutex> lock(act_mutex_);
+        std::vector<float> filtered_action(last_act_.size(), 0.0f);
         for (size_t i = 0; i < act_.size(); i++) {
-            last_act_[i] = act_alpha_ * act_[i] + (1 - act_alpha_) * last_act_[i];
+            const float candidate =
+                act_alpha_ * act_[i] + (1 - act_alpha_) * last_act_[i];
+            if (!std::isfinite(act_[i]) || !std::isfinite(last_act_[i]) ||
+                !std::isfinite(candidate)) {
+                throw std::runtime_error("non_finite_action_target");
+            }
+            const size_t limit_offset = i * 2;
+            if (limit_offset + 1 >= joint_limits_.size() ||
+                candidate < joint_limits_[limit_offset] ||
+                candidate > joint_limits_[limit_offset + 1]) {
+                throw std::runtime_error("action_target_outside_joint_limits");
+            }
+            filtered_action[i] = candidate;
         }
+        generation = action_generation_.load(std::memory_order_acquire);
+        robot_->apply_action(filtered_action);
+        last_act_ = std::move(filtered_action);
+        applied_action_generation_.store(generation, std::memory_order_release);
     }
-    robot_->apply_action(last_act_);
 }
 
 void InferenceNode::control() {
     pthread_setname_np(pthread_self(), "control");
     struct sched_param sp{}; sp.sched_priority = 45;
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
+        set_runtime_fault("control_thread_realtime_priority_failed");
         RCLCPP_FATAL(this->get_logger(), "Failed to set realtime priority for control thread");
         rclcpp::shutdown();
         return;
@@ -278,6 +447,7 @@ void InferenceNode::control() {
         try {
             apply_action();
         } catch (const std::exception& e) {
+            set_runtime_fault(std::string("control_thread_exception: ") + e.what());
             RCLCPP_FATAL(this->get_logger(), "Exception in control thread: %s", e.what());
             rclcpp::shutdown();
             return;
@@ -302,12 +472,14 @@ void InferenceNode::inference() {
     CPU_ZERO(&cpuset);
     CPU_SET(cpu_id, &cpuset);
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+        set_runtime_fault("inference_thread_cpu_affinity_failed");
         RCLCPP_FATAL(this->get_logger(), "Failed to bind inference thread to Core %u", cpu_id);
         rclcpp::shutdown();
         return;
     }
     struct sched_param sp{}; sp.sched_priority = 35;
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
+        set_runtime_fault("inference_thread_realtime_priority_failed");
         RCLCPP_FATAL(this->get_logger(), "Failed to set realtime priority for inference thread");
         rclcpp::shutdown();
         return;
@@ -353,6 +525,11 @@ void InferenceNode::inference() {
             publish_joint_states();
             flatten_obs_segments(policy.obs_segments, policy.obs.begin());
 
+            if (!std::all_of(policy.obs.begin(), policy.obs.end(),
+                             [](float value) { return std::isfinite(value); })) {
+                throw std::runtime_error("non_finite_policy_observation");
+            }
+
             std::transform(policy.obs.begin(), policy.obs.end(), policy.obs.begin(), [this](float val) {
                 return std::clamp(val, -clip_observations_, clip_observations_);
             });
@@ -374,6 +551,11 @@ void InferenceNode::inference() {
                                    policy.frame_stack, policy.stack_order,
                                    policy.obs_layout_sizes, policy.is_first_frame);
             }
+            if (!std::all_of(
+                    policy.ctx->input_buffer.begin(), policy.ctx->input_buffer.end(),
+                    [](float value) { return std::isfinite(value); })) {
+                throw std::runtime_error("non_finite_policy_input");
+            }
             if (policy.motion_loader) {
                 step_motion_frame();
             }
@@ -383,6 +565,13 @@ void InferenceNode::inference() {
                 policy.ctx->input_names_raw.data(), policy.ctx->input_tensor.get(), policy.ctx->num_inputs,
                 policy.ctx->output_names_raw.data(), policy.ctx->output_tensor.get(), policy.ctx->num_outputs);
 
+            if (!std::all_of(
+                    policy.ctx->output_buffer.begin(), policy.ctx->output_buffer.end(),
+                    [](float value) { return std::isfinite(value); })) {
+                throw std::runtime_error("non_finite_policy_output");
+            }
+
+            uint64_t output_generation = 0;
             {
                 std::unique_lock<std::mutex> interrupt_lock(interrupt_mutex_, std::defer_lock);
                 if (supports_interrupt() && is_interrupt_.load()) {
@@ -393,17 +582,37 @@ void InferenceNode::inference() {
                     policy.ctx->output_buffer[i] = action_rescale_ * std::clamp(
                         policy.ctx->output_buffer[i], -clip_actions_, clip_actions_);
                     const auto joint_idx = usd2urdf_[i];
-                    act_[joint_idx] = policy.ctx->output_buffer[i] * action_scale_[joint_idx] +
-                                      joint_default_angle_[joint_idx];
+                    const float action_target =
+                        policy.ctx->output_buffer[i] * action_scale_[joint_idx] +
+                        joint_default_angle_[joint_idx];
+                    if (!std::isfinite(action_target)) {
+                        throw std::runtime_error("non_finite_action_target");
+                    }
+                    act_[joint_idx] = action_target;
                 }
                 if (interrupt_lock.owns_lock()) {
                     for (size_t i = 0; i < interrupt_action_.size(); i++) {
-                        act_[act_.size() - interrupt_action_.size() + i] = interrupt_action_[i];
+                        const float interrupt_target = interrupt_action_[i];
+                        if (!std::isfinite(interrupt_target)) {
+                            throw std::runtime_error("non_finite_interrupt_action");
+                        }
+                        act_[act_.size() - interrupt_action_.size() + i] = interrupt_target;
                     }
+                }
+                output_generation = action_generation_.fetch_add(
+                    1, std::memory_order_acq_rel) + 1;
+            }
+            if (policy.motion_loader) {
+                policy.motion_frames_executed += 1;
+                if (!policy.motion_complete &&
+                    policy.motion_frames_executed >= policy.motion_loader->get_num_frames()) {
+                    policy.motion_complete = true;
+                    policy.motion_final_action_generation = output_generation;
                 }
             }
             publish_action();
         } catch (const std::exception& e) {
+            set_runtime_fault(std::string("inference_thread_exception: ") + e.what());
             RCLCPP_FATAL(this->get_logger(), "Exception in inference thread: %s", e.what());
             rclcpp::shutdown();
             return;

@@ -2,7 +2,10 @@
 
 This integration adds the trained knee-bend Sawasdee motion as a second policy
 beside RoboParty's stock locomotion policy. It reuses the existing BeyondMimic
-runtime; no motor-control code is changed.
+action-to-motor interface; the motor-driver repositories are unchanged.
+
+The Debian package and CI target the robot deployment baseline: Ubuntu 22.04
+with ROS 2 Humble, on both amd64 and arm64.
 
 ## Runtime contract
 
@@ -39,7 +42,7 @@ then select the new configuration:
 The command is run from the top-level `roboparty_deploy` repository, not from
 this submodule.
 
-Current gamepad flow:
+Manual gamepad flow remains available:
 
 1. Put the robot on a supported stand and clear the surrounding area.
 2. Use `X` for the normal motor initialization flow.
@@ -48,14 +51,42 @@ Current gamepad flow:
 5. Use `LB` to toggle between stock locomotion and Sawasdee.
 6. Use `B` to pause, then deinitialize safely with `X` when finished.
 
-The motion is not a loop. The runtime advances through its 383 reference frames
-and clamps at the final frame. Return-to-stand and repeat behavior should be
-implemented as an explicit skill lifecycle before an autonomous agent invokes
-the policy.
+The motion is not a loop. The typed action advances through its 383 reference
+frames, reports progress, and then automatically returns to locomotion.
+Cancellation, timeout, joystick override, inference stop, and motor
+deinitialization also cancel the action and zero the velocity buffer.
+
+## Typed agent API
+
+The action accepts semantic IDs, never numeric policy indexes:
+
+```bash
+ros2 action send_goal --feedback \
+  /execute_motion roboparty_inference/action/ExecuteMotion \
+  "{motion_id: sawasdee, timeout_s: 12.0}"
+```
+
+Select the sole external velocity source explicitly:
+
+```bash
+ros2 service call /set_command_source \
+  roboparty_inference/srv/SetCommandSource "{source: 1}"
+```
+
+`/runtime_state` reports command ownership, active policy, action/manual motion
+activity, motion progress, the first latched runtime fault, and whether the
+latest external command is fresh. Re-selecting the current command source is
+idempotent. External `/cmd_vel` expires after 250 ms by default and becomes
+zero inside the inference process. A malformed/non-finite sensor or command
+message, non-finite policy value, or out-of-limit action latches a terminal
+fault; inference cannot be resumed until the node is restarted. A cancelling
+motion or active joint reset also blocks resume.
+
+These interfaces must be tested in a ROS-only/offline harness and simulation
+before they are exercised on physical hardware.
 
 ## Safety boundary for a future VLA agent
 
 A VLA must request a named skill such as `sawasdee`; it must never publish raw
-joint commands. A deterministic Skill Manager should own policy selection,
-reset the motion frame, supervise completion or timeout, and return to the
-standing controller. A Safety Supervisor and human stop always take priority.
+joint commands. A deterministic Skill Manager should own action lifecycle and
+velocity publication. A Safety Supervisor and human stop always take priority.

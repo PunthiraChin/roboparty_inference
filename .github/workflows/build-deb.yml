@@ -9,9 +9,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            os: ubuntu-24.04
+            os: ubuntu-22.04
           - arch: arm64
-            os: [self-hosted, Linux, ARM64, "24.04"]
+            os: [self-hosted, Linux, ARM64, "22.04"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -50,11 +50,11 @@ jobs:
 
           echo "✅ Tag matches changelog: v$TAG_VERSION"
 
-      - name: Setup ROS 2 Jazzy
+      - name: Setup ROS 2 Humble
         if: matrix.arch == 'amd64'
         uses: ros-tooling/setup-ros@v0.7
         with:
-          required-ros-distributions: jazzy
+          required-ros-distributions: humble
 
       - name: Cache APT packages
         uses: actions/cache@v4
@@ -71,7 +71,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             -o dir::cache::archives="$PWD/apt-cache" \
             build-essential cmake ccache dpkg-dev debhelper devscripts \
-            git wget python3-pip python3-vcstool \
+            git wget python3-pip python3-vcstool python3-yaml \
             libboost-all-dev libspdlog-dev libfmt-dev python3-dev pybind11-dev gh
           
           # Fix permissions for cache saving
@@ -96,10 +96,13 @@ jobs:
         run: |
           cd debs && sudo dpkg -i ./*.deb || sudo apt-get install -f -y
 
+      - name: Validate agent API contract
+        run: python3 -m unittest discover -s test -p 'test_*.py' -v
+
       - name: Build deb package
         run: |
           # Source ROS 2 explicitly to be safe
-          . /opt/ros/jazzy/setup.sh
+          . /opt/ros/humble/setup.sh
           dpkg-buildpackage -us -uc -b
           mv ../*.deb .
           VERSION=$(dpkg-parsechangelog -S Version | cut -d'-' -f1 || echo "unknown")

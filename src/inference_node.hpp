@@ -22,6 +22,7 @@
 #include <sstream>
 #include <thread>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/joy.hpp>
@@ -30,6 +31,9 @@
 #include "utils/motion_loader.hpp"
 #include "utils/latent_loader.hpp"
 #include <std_srvs/srv/trigger.hpp>
+#include "roboparty_inference/action/execute_motion.hpp"
+#include "roboparty_inference/msg/runtime_state.hpp"
+#include "roboparty_inference/srv/set_command_source.hpp"
 #include "robot_interface.hpp"
 
 enum class ObsStackOrder {
@@ -77,6 +81,7 @@ class InferenceNode : public rclcpp::Node {
     };
 
     struct PolicyRuntime {
+        std::string id;
         std::string name;
         std::string model_path;
         std::string motion_path;
@@ -96,6 +101,9 @@ class InferenceNode : public rclcpp::Node {
         std::shared_ptr<MotionLoader> motion_loader;
         std::unique_ptr<LatentLoader> latent_loader;
         size_t motion_frame = 0;
+        size_t motion_frames_executed = 0;
+        uint64_t motion_final_action_generation = 0;
+        bool motion_complete = false;
         bool is_first_frame = true;
     };
 
@@ -162,9 +170,6 @@ class InferenceNode : public rclcpp::Node {
             this->create_publisher<sensor_msgs::msg::Imu>("/imu", data_qos);
         joint_state_publisher_ =
             this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", data_qos);
-        inference_thread_ = std::thread(&InferenceNode::inference, this);
-        control_thread_ = std::thread(&InferenceNode::control, this);
-
         reset_joints_service_ = this->create_service<std_srvs::srv::Trigger>(
             "reset_joints", std::bind(&InferenceNode::reset_joints_srv, this, std::placeholders::_1, std::placeholders::_2));
         set_zeros_service_ = this->create_service<std_srvs::srv::Trigger>(
@@ -185,8 +190,26 @@ class InferenceNode : public rclcpp::Node {
             "start_inference", std::bind(&InferenceNode::start_inference_srv, this, std::placeholders::_1, std::placeholders::_2));
         stop_inference_service_ = this->create_service<std_srvs::srv::Trigger>(
             "stop_inference", std::bind(&InferenceNode::stop_inference_srv, this, std::placeholders::_1, std::placeholders::_2));
+        set_command_source_service_ = this->create_service<roboparty_inference::srv::SetCommandSource>(
+            "set_command_source", std::bind(&InferenceNode::set_command_source_srv, this, std::placeholders::_1, std::placeholders::_2));
+        runtime_state_publisher_ = this->create_publisher<roboparty_inference::msg::RuntimeState>(
+            "runtime_state", rclcpp::QoS(1).reliable().transient_local());
+        runtime_state_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(100), std::bind(&InferenceNode::publish_runtime_state, this));
+        execute_motion_action_server_ = rclcpp_action::create_server<roboparty_inference::action::ExecuteMotion>(
+            this,
+            "execute_motion",
+            std::bind(&InferenceNode::handle_motion_goal, this, std::placeholders::_1, std::placeholders::_2),
+            std::bind(&InferenceNode::handle_motion_cancel, this, std::placeholders::_1),
+            std::bind(&InferenceNode::handle_motion_accepted, this, std::placeholders::_1));
+        // Worker faults must never race ahead of the transient-local status
+        // publisher.  Start real-time work only after every control endpoint is
+        // ready, so a terminal startup fault is observable immediately.
+        inference_thread_ = std::thread(&InferenceNode::inference, this);
+        control_thread_ = std::thread(&InferenceNode::control, this);
     }
     ~InferenceNode() {
+        motion_cancel_requested_.store(true);
         is_running_.store(false);
         if (reset_thread_.joinable()) {
             reset_thread_.join();
@@ -197,6 +220,9 @@ class InferenceNode : public rclcpp::Node {
         if (control_thread_.joinable()) {
             control_thread_.join();
         }
+        if (motion_action_thread_.joinable()) {
+            motion_action_thread_.join();
+        }
         reset_runtime_state();
         if (robot_) {
             robot_.reset();
@@ -205,12 +231,16 @@ class InferenceNode : public rclcpp::Node {
     bool supports_interrupt() const;
     bool has_motion_policy() const;
    private:
+    using ExecuteMotion = roboparty_inference::action::ExecuteMotion;
+    using ExecuteMotionGoalHandle = rclcpp_action::ServerGoalHandle<ExecuteMotion>;
+
     std::shared_ptr<RobotInterface> robot_;
     std::atomic<bool> is_running_{false}, is_joy_control_{true}, is_interrupt_{false}, is_motion_policy_{false};
     std::string robot_config_path_;
     std::string perception_obs_topic_;
     size_t current_motion_policy_idx_ = 0;
     int active_policy_idx_ = 0;
+    int locomotion_policy_idx_ = -1;
     int perception_obs_num_, joint_num_;
     bool use_depth_ = false;
     int decimation_;
@@ -228,6 +258,7 @@ class InferenceNode : public rclcpp::Node {
     std::thread inference_thread_;
     std::thread control_thread_;
     std::thread reset_thread_;
+    std::thread motion_action_thread_;
     std::mutex reset_thread_mutex_;
     bool reset_thread_running_ = false;
     float act_alpha_;
@@ -236,6 +267,9 @@ class InferenceNode : public rclcpp::Node {
         obs_scales_gravity_b_, clip_observations_;
     float clip_actions_;
     float action_rescale_ = 1.0f;
+    double cmd_vel_timeout_s_ = 0.25;
+    std::chrono::steady_clock::time_point last_external_cmd_time_{};
+    bool external_cmd_seen_ = false;
     std::vector<double> action_scale_, clip_cmd_, joint_default_angle_, joint_limits_;
     std::vector<long int> usd2urdf_;
     float gravity_z_upper_;
@@ -243,8 +277,20 @@ class InferenceNode : public rclcpp::Node {
     std::vector<PolicyRuntime> policies_;
     std::vector<int> motion_policy_indices_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_joints_service_, set_zeros_service_, clear_errors_service_, refresh_joints_service_, read_joints_service_, read_imu_service_, init_motors_service_, deinit_motors_service_, start_inference_service_, stop_inference_service_;
+    rclcpp::Service<roboparty_inference::srv::SetCommandSource>::SharedPtr set_command_source_service_;
+    rclcpp::Publisher<roboparty_inference::msg::RuntimeState>::SharedPtr runtime_state_publisher_;
+    rclcpp::TimerBase::SharedPtr runtime_state_timer_;
+    rclcpp_action::Server<ExecuteMotion>::SharedPtr execute_motion_action_server_;
+    std::atomic<bool> motion_action_active_{false};
+    std::atomic<bool> motion_cancel_requested_{false};
+    std::atomic<uint64_t> action_generation_{0};
+    std::atomic<uint64_t> applied_action_generation_{0};
+    rclcpp_action::GoalUUID active_motion_goal_uuid_{};
+    std::string runtime_fault_;
 
-    std::mutex act_mutex_, perception_mutex_, interrupt_mutex_, cmd_mutex_, mode_mutex_, control_mutex_, lb_switch_mutex_;
+    std::mutex act_mutex_, perception_mutex_, interrupt_mutex_, cmd_mutex_, mode_mutex_,
+        control_mutex_, lb_switch_mutex_, lifecycle_mutex_, motion_goal_mutex_,
+        runtime_fault_mutex_;
     std::vector<float> act_, last_act_, cmd_vel_, interrupt_action_, perception_obs_buffer_;
     std::vector<float> joint_pos_buffer_, joint_vel_buffer_, joint_torques_buffer_, quat_buffer_, ang_vel_buffer_;
     sensor_msgs::msg::JointState joint_state_msg_, action_msg_;
@@ -268,6 +314,18 @@ class InferenceNode : public rclcpp::Node {
     void request_depth_history_reset();
     void reset_policy_runtime(PolicyRuntime& policy);
     void step_motion_frame();
+    void zero_cmd_vel();
+    void request_motion_cancel();
+    void set_runtime_fault(const std::string& fault);
+    bool try_start_inference(std::string& reason);
+    bool resume_inference_if_fault_free(std::string& reason);
+    bool external_command_is_fresh();
+    bool activate_motion_policy(
+        const std::string& policy_id,
+        const rclcpp_action::GoalUUID& goal_uuid,
+        std::string& error);
+    void return_to_locomotion(const std::string& reason);
+    int find_policy_by_id(const std::string& policy_id) const;
 
     // Observation registry and layout helpers.
     static const std::vector<ObsSourceDefinition>& obs_source_definitions();
@@ -322,6 +380,23 @@ class InferenceNode : public rclcpp::Node {
                              std::shared_ptr<std_srvs::srv::Trigger::Response> response);
     void stop_inference_srv(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                             std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+    void set_command_source_srv(
+        const std::shared_ptr<roboparty_inference::srv::SetCommandSource::Request> request,
+        std::shared_ptr<roboparty_inference::srv::SetCommandSource::Response> response);
+    rclcpp_action::GoalResponse handle_motion_goal(
+        const rclcpp_action::GoalUUID& uuid,
+        std::shared_ptr<const ExecuteMotion::Goal> goal);
+    rclcpp_action::CancelResponse handle_motion_cancel(
+        const std::shared_ptr<ExecuteMotionGoalHandle> goal_handle);
+    void handle_motion_accepted(const std::shared_ptr<ExecuteMotionGoalHandle> goal_handle);
+    void execute_motion(const std::shared_ptr<ExecuteMotionGoalHandle> goal_handle);
+    void finish_motion(
+        const std::shared_ptr<ExecuteMotionGoalHandle> goal_handle,
+        bool requested_success,
+        const std::string& message,
+        const std::string& return_reason) noexcept;
+    void publish_runtime_state();
+    void publish_terminal_fault_state(const std::string& fault);
     void publish_joint_states();
     void publish_action();
     void publish_imu();

@@ -201,6 +201,7 @@ void InferenceNode::get_gravity_b_obs(std::vector<float>& segment) {
     Eigen::Quaternionf q_w2b = q_b2w.inverse();
     Eigen::Vector3f gravity_b = q_w2b * gravity_w;
     if (gravity_b.z() > gravity_z_upper_){
+        set_runtime_fault("robot_fall_detected");
         RCLCPP_FATAL(this->get_logger(), "Robot fell down! Shutting down...");
         rclcpp::shutdown();
         throw std::runtime_error("Robot fell down");
@@ -212,6 +213,14 @@ void InferenceNode::get_gravity_b_obs(std::vector<float>& segment) {
 
 void InferenceNode::get_cmd_vel_obs(std::vector<float>& segment) {
     std::unique_lock<std::mutex> lock(cmd_mutex_);
+    if (!is_joy_control_.load()) {
+        const double age_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - last_external_cmd_time_).count();
+        if (!external_cmd_seen_ || age_s > cmd_vel_timeout_s_) {
+            std::fill(cmd_vel_.begin(), cmd_vel_.end(), 0.0f);
+            external_cmd_seen_ = false;
+        }
+    }
     segment[0] = cmd_vel_[0] * obs_scales_lin_vel_;
     segment[1] = cmd_vel_[1] * obs_scales_lin_vel_;
     segment[2] = cmd_vel_[2] * obs_scales_ang_vel_;
@@ -224,6 +233,7 @@ void InferenceNode::get_dof_pos_obs(std::vector<float>& segment) {
     }
     for(size_t i = 0; i < joint_limits_.size() / 2; i++){
         if(joint_pos_buffer_[i] < joint_limits_[i * 2] || joint_pos_buffer_[i] > joint_limits_[i * 2 + 1]){
+            set_runtime_fault("joint_limit_violation_" + std::to_string(i + 1));
             RCLCPP_FATAL(this->get_logger(), "Joint %zu out of limit! Shutting down...", i+1);
             rclcpp::shutdown();
             throw std::runtime_error("Joint out of limit");

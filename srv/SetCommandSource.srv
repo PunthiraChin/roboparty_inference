@@ -1,0 +1,7 @@
+uint8 JOYSTICK=0
+uint8 EXTERNAL=1
+
+uint8 source
+---
+bool success
+string message

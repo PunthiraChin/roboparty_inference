@@ -1,6 +1,8 @@
 #environment
 .vscode/
 .idea/
+__pycache__/
+*.py[cod]
 
 # ros2
 build/

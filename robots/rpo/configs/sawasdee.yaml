@@ -1,7 +1,8 @@
 inference_node:
     ros__parameters:
-        # Policy 0 is the stock locomotion controller. Policy 1 is the
-        # Sawasdee motion policy and is selected with the existing LB toggle.
+        # Semantic IDs are used by the typed ExecuteMotion action. Numeric
+        # indexes remain an internal implementation detail.
+        policy_ids: ["locomotion", "sawasdee"]
         model_names: ["policy.onnx", "policy_sawasdee.onnx"]
         motion_names: ["", "sawasdee_knee_bend_v1.npz"]
         obs_layouts:
@@ -27,6 +28,7 @@ inference_node:
             [-0.4, 0.6,
              -0.4, 0.4,
              -0.8, 0.8]
+        cmd_vel_timeout_s: 0.25
         joint_default_angle:
             [0.0, 0.0, -0.1, 0.3, -0.2, 0.0,
              0.0, 0.0, -0.1, 0.3, -0.2, 0.0, 0.0,
@@ -56,4 +58,4 @@ inference_node:
              -3.14, 3.14,
              -3.14, 3.14,
              -3.14, 3.14]
-        gravity_z_upper: 1.0
+        gravity_z_upper: -0.5

@@ -1,0 +1,12 @@
+uint8 COMMAND_SOURCE_JOYSTICK=0
+uint8 COMMAND_SOURCE_EXTERNAL=1
+
+bool motors_initialized
+bool inference_running
+uint8 command_source
+string active_policy_id
+bool motion_active
+uint32 motion_frames_executed
+uint32 motion_frame_count
+bool external_command_fresh
+string fault

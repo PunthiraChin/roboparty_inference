@@ -1,0 +1,11 @@
+# Execute one registered motion policy by semantic ID.
+string motion_id
+float32 timeout_s
+---
+bool success
+string message
+---
+string motion_id
+uint32 frames_executed
+uint32 total_frames
+float32 progress
