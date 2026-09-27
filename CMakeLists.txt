@@ -4,7 +4,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(roboparty_inference)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native")
+# Keep release packages portable across the supported x86_64 and ARM64 robots.
+# CMake's Release profile already enables optimization; host-specific ISA
+# flags could encode instructions that do not exist on the target CPU.
 set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)

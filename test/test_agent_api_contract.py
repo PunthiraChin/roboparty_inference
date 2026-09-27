@@ -38,6 +38,7 @@ class AgentApiContractTests(unittest.TestCase):
     def test_generated_interfaces_are_wired_into_build(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text()
         package = (ROOT / "package.xml").read_text()
+        self.assertNotIn("-march=native", cmake)
         self.assertIn("rosidl_generate_interfaces", cmake)
         self.assertIn("rclcpp_action", cmake)
         self.assertIn("find_package(action_msgs REQUIRED)", cmake)
