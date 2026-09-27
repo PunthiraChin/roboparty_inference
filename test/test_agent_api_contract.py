@@ -61,6 +61,10 @@ class AgentApiContractTests(unittest.TestCase):
         self.assertIn("ubuntu-22.04-arm", workflow)
         self.assertNotIn("self-hosted", workflow)
         self.assertNotIn("if: matrix.arch == 'amd64'", workflow)
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("needs: build", workflow)
+        self.assertIn("actions/download-artifact@v4", workflow)
         self.assertIn("gh release download v1.3.0 --repo Roboparty/roboparty_imu", workflow)
         self.assertIn(
             "gh release download v2.2.1 --repo Roboparty/roboparty_motors", workflow
