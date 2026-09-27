@@ -57,6 +57,11 @@ class AgentApiContractTests(unittest.TestCase):
             self.assertIn("humble", text.lower())
             self.assertNotIn("jazzy", text.lower())
         self.assertIn("ubuntu-22.04", workflow)
+        self.assertIn("gh release download v1.3.0 --repo Roboparty/roboparty_imu", workflow)
+        self.assertIn(
+            "gh release download v2.2.1 --repo Roboparty/roboparty_motors", workflow
+        )
+        self.assertNotIn("Downloading latest", workflow)
         package_version = re.search(r"<version>([^<]+)</version>", package)
         changelog_version = re.search(r"\(([^-)]+)-", changelog)
         self.assertIsNotNone(package_version)

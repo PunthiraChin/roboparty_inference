@@ -81,20 +81,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           mkdir -p debs
           cd debs
-          
-          echo ">>> Downloading latest ${{ matrix.arch }} releases..."
-          
-          gh release download --repo Roboparty/roboparty_base   --pattern "*all.deb" || echo "Failed roboparty_base"
-          gh release download --repo Roboparty/roboparty_imu    --pattern "*${{ matrix.arch }}.deb" || echo "Failed roboparty_imu"
-          gh release download --repo Roboparty/roboparty_motors --pattern "*${{ matrix.arch }}.deb" || echo "Failed roboparty_motors"
+
+          # These are the final upstream releases built on Ubuntu 22.04.
+          # Newer motor/IMU debs target Ubuntu 24.04 and depend on libstdc++ 13,
+          # libfmt9, and libspdlog1.12-fmt9, which Jammy cannot satisfy.
+          gh release download v1.1.8 --repo Roboparty/roboparty_base \
+            --pattern "roboparty-base_1.1.8-1_all.deb"
+          gh release download v1.3.0 --repo Roboparty/roboparty_imu \
+            --pattern "roboparty-imu_1.3.0-1_${{ matrix.arch }}.deb"
+          gh release download v2.2.1 --repo Roboparty/roboparty_motors \
+            --pattern "roboparty-motors_2.2.1-1_${{ matrix.arch }}.deb"
           
           ls -lh
 
       - name: Install RoboParty Dependencies
         run: |
-          cd debs && sudo dpkg -i ./*.deb || sudo apt-get install -f -y
+          sudo apt-get install -y ./debs/*.deb
 
       - name: Validate agent API contract
         run: python3 -m unittest discover -s test -p 'test_*.py' -v
