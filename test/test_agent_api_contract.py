@@ -66,9 +66,10 @@ class AgentApiContractTests(unittest.TestCase):
             "ros-humble-ament-index-python",
             "ros-humble-launch",
             "ros-humble-launch-ros",
+            "ros-humble-ros2launch",
         ):
             self.assertIn(dependency, control)
-        for dependency in ("ament_index_python", "launch", "launch_ros"):
+        for dependency in ("ament_index_python", "launch", "launch_ros", "ros2launch"):
             self.assertIn(f"<exec_depend>{dependency}</exec_depend>", package)
         self.assertIn("ubuntu-22.04", workflow)
         self.assertIn("ubuntu-22.04-arm", workflow)

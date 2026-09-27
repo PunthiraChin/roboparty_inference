@@ -22,6 +22,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends},
          ros-humble-std-srvs,
          ros-humble-ament-index-python,
          ros-humble-launch, ros-humble-launch-ros,
+         ros-humble-ros2launch,
          ros-humble-rosidl-default-runtime,
          roboparty-base (>= 1.0.0), roboparty-motors (>= 1.2.0),
          roboparty-imu (>= 1.1.1)
