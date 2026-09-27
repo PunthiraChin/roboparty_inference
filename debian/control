@@ -17,6 +17,11 @@ Package: roboparty-inference
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
          ros-humble-rclcpp, ros-humble-rclcpp-action,
+         ros-humble-action-msgs, ros-humble-std-msgs,
+         ros-humble-sensor-msgs, ros-humble-geometry-msgs,
+         ros-humble-std-srvs,
+         ros-humble-ament-index-python,
+         ros-humble-launch, ros-humble-launch-ros,
          ros-humble-rosidl-default-runtime,
          roboparty-base (>= 1.0.0), roboparty-motors (>= 1.2.0),
          roboparty-imu (>= 1.1.1)

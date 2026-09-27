@@ -57,6 +57,19 @@ class AgentApiContractTests(unittest.TestCase):
         for text in (control, rules, workflow):
             self.assertIn("humble", text.lower())
             self.assertNotIn("jazzy", text.lower())
+        for dependency in (
+            "ros-humble-action-msgs",
+            "ros-humble-std-msgs",
+            "ros-humble-sensor-msgs",
+            "ros-humble-geometry-msgs",
+            "ros-humble-std-srvs",
+            "ros-humble-ament-index-python",
+            "ros-humble-launch",
+            "ros-humble-launch-ros",
+        ):
+            self.assertIn(dependency, control)
+        for dependency in ("ament_index_python", "launch", "launch_ros"):
+            self.assertIn(f"<exec_depend>{dependency}</exec_depend>", package)
         self.assertIn("ubuntu-22.04", workflow)
         self.assertIn("ubuntu-22.04-arm", workflow)
         self.assertNotIn("self-hosted", workflow)
